@@ -41,11 +41,12 @@ def sync_block(request_session):
     start_block = int(request_session.get(url_info).json()["result"]["sync_info"]["latest_block_height"]) 
     while True:
         block = int(request_session.get(url_info).json()["result"]["sync_info"]["latest_block_height"])
-        print(f"wait new block {block} {start_block}")
+        print(f"wait new block {block} {start_block}", end='\r')
         if block == start_block:
             time.sleep(1)
             continue
         else:
+            print("")
             break
 
 def main():
@@ -69,6 +70,7 @@ def main():
     totalTxSent = 0
     prev_totalTxSent = 0
     while True:
+        sync_block(r)
         try:
             response = r.get(crypto_url)
             validators = response.json()["result"]
@@ -97,8 +99,8 @@ def main():
             restart_daemon()
             totalTxSent = 0
             prev_totalTxSent = 0
-        time.sleep(60)
 
+        time.sleep(120)
         
 
 if __name__ == "__main__":
