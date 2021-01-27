@@ -131,13 +131,15 @@ def main():
         response = r.get(url_account)
         account_info = response.json()["account"]
         account_num = int(account_info["account_number"])
+        print(f"account number {account_num}")
         sequence = int(account_info["sequence"])
 
         print(f"retrieve sequence num : {sequence}")
         print(f"balance of address 1: {balance_1}")
 
         if balance_1 >= 4000000 :
-            stop_at = sequence + 200
+            stop_at = sequence + 300
+            seq = sequence
             for seq in range(sequence, stop_at):
             #while True:
                 # make transaction
@@ -161,11 +163,14 @@ def main():
                 elif  code == 4:
                     print(f"sequence {seq} error {code} unauthorized")
                     # unauthorized
+                    print(response.text)
                     p = re.compile('\d+')
                     int(p.findall(result['raw_log'])[1])
+                    time.sleep(5)
+                    break
                 elif  code == 19:
-                    print(f"error {code} tx already in mempool", end='\r')
-                    continue
+                    print(f"error {code} tx {seq} already in mempool", end='\n')
+                    break
                 elif  code == 20:
                     print(f"index {seq} error {code} mempool is full")
                     time.sleep(1)
@@ -174,7 +179,7 @@ def main():
                     print(f"index {seq} error {code} sequence error (congestion)")
                 else :
                     print(f"index {seq} error {code} ")
-            time.sleep(1)
+            time.sleep(5)
             # end for loop
         else:
             print("no Tcro left")
