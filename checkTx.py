@@ -36,6 +36,9 @@ def restart_daemon():
     time.sleep(5)
     manager.StartUnit('chain-maind.service', 'replace')
 
+# wait for the next block height
+# can be usefull to restart the service between 2 block and
+# limite the lost of commits
 def sync_block(request_session):
     url_info = "http://localhost:26657/status"
     start_block = int(request_session.get(url_info).json()["result"]["sync_info"]["latest_block_height"]) 
@@ -50,7 +53,7 @@ def sync_block(request_session):
             break
 
 def main():
-    # the api port setted in ${home_dir of chain-maind}/config/app.toml, the default is ~/.chain-maind/config/app.toml
+    # the URL to retrieve the leaderboard informations
     crypto_url = "https://chain.crypto.com/explorer/crossfire/api/v1/crossfire/validators"
     
     r = requests.Session()
@@ -58,8 +61,6 @@ def main():
     logger = logging.getLogger('mylogger')
     #set logger level
     logger.setLevel(logging.INFO)
-    #or you can set the following level
-    #logger.setLevel(logging.DEBUG)
 
     handler = logging.FileHandler('perf_data.log')
     # create a logging format
@@ -79,19 +80,23 @@ def main():
         else:
             for validator in validators :
                 moniker = validator["moniker"]
+                # find my moniker
                 if moniker == "Tolosa-node":
                     stats = validator["stats"]
                     prev_totalTxSent = totalTxSent
                     totalTxSent = stats["totalTxSent"]
+                # find another moniker
                 if moniker == "Staking Fund":
                     stats = validator["stats"]
                     totalTxSent_SF = stats["totalTxSent"]
+                # find another moniker
                 if moniker == "mjolnir":
                     stats = validator["stats"]
                     totalTxSent_M = stats["totalTxSent"]
-
+        # write some stats
         print(f"{totalTxSent}")
         logger.info(f"{totalTxSent} {totalTxSent_SF} {totalTxSent_M}")
+        # if the number of Tx did not increment since last read, reset the service
         if totalTxSent == prev_totalTxSent:
             # restart service
             print(f"Total send does not progress ({totalTxSent})")
@@ -100,6 +105,7 @@ def main():
             totalTxSent = 0
             prev_totalTxSent = 0
 
+        # wait for 2 minutes
         time.sleep(120)
         
 
