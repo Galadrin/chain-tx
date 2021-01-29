@@ -33,7 +33,7 @@ def restart_daemon():
     if is_service_active('chain-maind.service'):
         manager.StopUnit('chain-maind.service', 'replace')
      #job = manager.RestartUnit('chain-maind.service', 'fail')
-    time.sleep(5)
+    time.sleep(2)
     manager.StartUnit('chain-maind.service', 'replace')
 
 # wait for the next block height
@@ -55,7 +55,9 @@ def sync_block(request_session):
 def main():
     # the URL to retrieve the leaderboard informations
     crypto_url = "https://chain.crypto.com/explorer/crossfire/api/v1/crossfire/validators"
+    checkblock_url = "https://chain.crypto.com/explorer/crossfire/api/v1/blocks?pagination=offset&page=1&limit=1&order=height.desc"
     
+    Tolosa_Node_Hex = "F54D08F05DFCB27207E3606FCCDA6DFCB11AB6AB"
     r = requests.Session()
     #create a logger
     logger = logging.getLogger('mylogger')
@@ -70,6 +72,13 @@ def main():
     
     totalTxSent = 0
     prev_totalTxSent = 0
+    block_count = 0
+    prev_block_count = 0
+    height = 0
+    prev_height = 0
+    percent_commit = 0
+    miss = 0
+    signed = False
     while True:
         sync_block(r)
         try:
@@ -85,6 +94,10 @@ def main():
                     stats = validator["stats"]
                     prev_totalTxSent = totalTxSent
                     totalTxSent = stats["totalTxSent"]
+                    prev_block_count = block_count
+                    block_count = int(stats["phase2BlockCount"])
+                    percent_commit = int(stats["commitCountPhase2"])*100.0 / int(stats["phase2BlockCount"])
+                    miss = int(stats["phase2BlockCount"]) - int(stats["commitCountPhase2"])
                 # find another moniker
                 if moniker == "Staking Fund":
                     stats = validator["stats"]
@@ -93,15 +106,39 @@ def main():
                 if moniker == "mjolnir":
                     stats = validator["stats"]
                     totalTxSent_M = stats["totalTxSent"]
+        # check the blocks aincrease on the explorer
+        # if they don't, the totalTx is not relevant
+        try:
+            response = r.get(checkblock_url)
+            last_block = response.json()["result"][0]
+        except Exception as e:
+            print(e)
+        else:
+            prev_height = height
+            height = last_block["blockHeight"]
+            for commiter in last_block["committedCouncilNodes"]:
+                if commiter["address"] == Tolosa_Node_Hex:
+                    signed = True
+                    
         # write some stats
-        print(f"{totalTxSent}")
+        print("Tx total: {} P2_Blocks {}\t{:.2f}% {} miss".format(totalTxSent, block_count, percent_commit, miss))
+
         logger.info(f"{totalTxSent} {totalTxSent_SF} {totalTxSent_M}")
         # if the number of Tx did not increment since last read, reset the service
-        if totalTxSent == prev_totalTxSent:
-            # restart service
-            print(f"Total send does not progress ({totalTxSent})")
-            sync_block(r)
-            restart_daemon()
+        if prev_block_count != block_count:
+            if totalTxSent == prev_totalTxSent:
+                # restart service
+                print(f"Total send does not progress ({totalTxSent})")
+                sync_block(r)
+                time.sleep(0.1)
+                restart_daemon()
+                totalTxSent = 0
+                prev_totalTxSent = 0
+        else:
+            print("data don't change")
+            # explorer is stuck. reset value to not fall in error when it come back
+            prev_block_count = 0
+            block_count = 0
             totalTxSent = 0
             prev_totalTxSent = 0
 
