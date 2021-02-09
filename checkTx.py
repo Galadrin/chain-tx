@@ -79,13 +79,14 @@ def main():
     percent_commit = 0
     miss = 0
     signed = False
+    force = False
     while True:
         sync_block(r)
         try:
             response = r.get(crypto_url)
             validators = response.json()["result"]
-        except:
-            pass
+        except Exception as e:
+            print(e)
         else:
             for validator in validators :
                 moniker = validator["moniker"]
@@ -95,18 +96,9 @@ def main():
                     prev_totalTxSent = totalTxSent
                     totalTxSent = stats["totalTxSent"]
                     prev_block_count = block_count
-                    block_count = int(stats["phase2BlockCount"])
-                    percent_commit = int(stats["commitCountPhase2"])*100.0 / int(stats["phase2BlockCount"])
-                    miss = int(stats["phase2BlockCount"]) - int(stats["commitCountPhase2"])
-                # find another moniker
-                if moniker == "Staking Fund":
-                    stats = validator["stats"]
-                    totalTxSent_SF = stats["totalTxSent"]
-                # find another moniker
-                if moniker == "mjolnir":
-                    stats = validator["stats"]
-                    totalTxSent_M = stats["totalTxSent"]
-        # check the blocks aincrease on the explorer
+                    block_count = int(stats["phase3BlockCount"])
+                    percent_commit = int(stats["commitCountPhase3"])*100.0 / int(stats["phase3BlockCount"])
+                    miss = int(stats["phase3BlockCount"]) - int(stats["commitCountPhase3"])
         # if they don't, the totalTx is not relevant
         try:
             response = r.get(checkblock_url)
@@ -123,10 +115,11 @@ def main():
         # write some stats
         print("Tx total: {} P2_Blocks {}\t{:.2f}% {} miss".format(totalTxSent, block_count, percent_commit, miss))
 
-        logger.info(f"{totalTxSent} {totalTxSent_SF} {totalTxSent_M}")
+        logger.info(f"{totalTxSent} ")
+
         # if the number of Tx did not increment since last read, reset the service
-        if prev_block_count != block_count:
-            if totalTxSent == prev_totalTxSent:
+        if force or (prev_block_count != block_count):
+            if force or (totalTxSent == prev_totalTxSent):
                 # restart service
                 print(f"Total send does not progress ({totalTxSent})")
                 sync_block(r)
@@ -134,6 +127,7 @@ def main():
                 restart_daemon()
                 totalTxSent = 0
                 prev_totalTxSent = 0
+                force = False
         else:
             print("data don't change")
             # explorer is stuck. reset value to not fall in error when it come back
@@ -143,7 +137,8 @@ def main():
             prev_totalTxSent = 0
 
         # wait for 2 minutes
-        time.sleep(120)
+        #force = True
+        time.sleep(300)
         
 
 if __name__ == "__main__":
