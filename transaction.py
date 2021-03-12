@@ -10,13 +10,14 @@ from shlex import split
 import re
 from datetime import datetime
 
+from requests.models import HTTPError
+
 from chainlibpy import Transaction, Wallet
 
 class Envoi ():
     def __init__(self, wallet, account_num):
         self.wallet_1 = wallet
         self.address_1 = self.wallet_1.address
-        print(self.address_1)
         self.account_num = account_num
         self.mode = "sync"
 
@@ -32,10 +33,10 @@ class Envoi ():
             wallet=self.wallet_1,
             account_num=self.account_num,
             sequence=sequence,
-            chain_id="crossfire",
-            fee=3000000,
+            chain_id="testnet-croeseid-2",
+            fee=20000,
             fee_denom="basetcro",
-            gas=3000000,
+            gas=200000,
             sync_mode=self.mode,
             memo=str(datetime.now()),
             timeout=timeout_block,
@@ -48,7 +49,7 @@ class Envoi ():
 # can be usefull to restart the service between 2 block and
 # limite the lost of commits
 def sync_block(request_session):
-    url_info = "http://localhost:26657/status"
+    url_info = "http://127.0.0.1:26657/status"
     start_block = int(request_session.get(url_info).json()["result"]["sync_info"]["latest_block_height"]) 
     while True:
         block = int(request_session.get(url_info).json()["result"]["sync_info"]["latest_block_height"])
@@ -65,27 +66,18 @@ def main():
     print("### STARTING FLODDING ###")
     
     # create a wallet from my seed
-    seed = "warrior sponsor tiger lift ship clog shrimp rent critic pony isolate clever lake notable gas enlist photo whisper excite toy master future van universe"
-    wallet_1 = Wallet(seed)
+    seed = "slogan initial run clock nasty clever aisle trumpet label doll comic fit gas game casino knife outside hunt genuine nerve mad notable alarm camera"
+    wallet_1 = Wallet(seed, path="m/44'/1'/0'/0/0", hrp="tcro")
     address_1 = wallet_1.address
     print(address_1)
     
-    # define my delegator address
-    delegatorAddr = "crocncl13njqv0la9cw2mr80utsmeppmtxk57kfggpnhly"
-    
-    # define all the endpoint we can need
-    
     # the api port setted in ${home_dir of chain-maind}/config/app.toml, the default is ~/.chain-maind/config/app.toml
-    crypto_url = "https://crossfire-lcd.crypto.com/"
     local_url = "http://localhost:1317"
-    health = "http://localhost:26657/health"
     url_tx = f"{local_url}/txs"
     #url_info = f"https://crossfire.crypto.com:443/status"
-    url_info = f"http://localhost:26657/status"
-    url_block = f"http://localhost:26657/block"
+    url_block = f"http://127.0.0.1:26657/block"
     url_account = f"{local_url}/cosmos/auth/v1beta1/accounts/{address_1}"
     url_balance = f"{local_url}/cosmos/bank/v1beta1/balances/{address_1}"
-    url_withdraw = f"{local_url}/distribution/delegators/{delegatorAddr}/rewards"
 
     # init request session to reuse tcp socket
     r = requests.Session()
@@ -135,21 +127,21 @@ def main():
 
         
         # check the balance is enought to not drain all our tcro
-        if balance_1 >= 4000000 :
+        if balance_1 >= 3000000000 : # each loop cost 30TCRO
             # define last sequence number for the loop
             stop_at = sequence + 1000
             seq = sequence
             for seq in range(sequence, stop_at):
             #while True:
                 # make transaction
-                break_block = block_height+5
+                break_block = block_height+20
                 signed_tx = send_object.get_pushTx_sync(amount=1, sequence=seq, timeout_block=break_block)
                 try:
                     # send the Tx
                     #print(signed_tx)
                     response = r.post(url_tx, json=signed_tx)
                     response.raise_for_status()
-                except http_error as e:
+                except HTTPError as e:
                     print(e)
                     time.sleep(1)
                     continue
@@ -198,6 +190,7 @@ def main():
                     print(f"index {seq} error {code} mempool is full")
                     # update sequence start number
                     sequence = seq
+                    stop_at = seq
                     break
 
                 elif  code == 32:
@@ -215,8 +208,9 @@ def main():
             time.sleep(5)
         else:
             print("no Tcro left")
-            withdraw_cmd = f"chain-maind tx distribution withdraw-all-rewards --from {address_1} -y --gas-prices 0.1basetcro --chain-id crossfire --keyring-backend test --home /home/dpierret/.chain-maind"
-            subprocess.run(split(withdraw_cmd))
+            withdraw_cmd = f"chain-maind tx distribution withdraw-all-rewards --from {address_1} -y --gas-prices 0.1basetcro --chain-id testnet-croeseid-2 --keyring-backend test --home /home/dpierret/.chain-maind"
+            subprocess.check_output(withdraw_cmd, shell=True).decode("utf-8")
+            sync_block(r)
 
 if __name__ == "__main__":
     main()
