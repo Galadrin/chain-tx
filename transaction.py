@@ -5,7 +5,6 @@ import time
 import logging
 import requests
 
-import subprocess
 import re
 from datetime import datetime
 
@@ -69,20 +68,20 @@ def main():
     print("### STARTING FLODDING ###")
 
     # create a wallet from my seed
-    seed = input("enter the seed of the sender wallet :")
+    seed = input("enter the seed of the sender wallet : ")
     # seed = "slogan initial run clock nasty clever aisle trumpet label doll comic fit gas game casino knife outside hunt genuine nerve mad notable alarm camera"
 
     # wallet_1 = Wallet(seed, path="m/44'/1'/0'/0/0", hrp="tcro")
-    path = "m/44'/118'/0'"
+    path = "m/44'/118'/0'/0/0"
     hrp = "juno"
     wallet_1 = Wallet(seed, path, hrp)
     address_1 = wallet_1.address
     print(address_1)
-    if input("is this address correct ? [Y/n]:") == 'n':
+    if input("is this address correct ? [Y/n]: ") == 'n':
         exit(1)
 
-    address_2 = input("enter the receiver address")
-    send_amount = int(input("enter the amount to save expressed in ujuno"))
+    address_2 = input("enter the receiver address : ")
+    send_amount = int(input("enter the amount to save expressed in ujuno : "))
 
     # the api port setted in ${home_dir of chain-maind}/config/app.toml, the default is ~/.chain-maind/config/app.toml
     local_url = "https://lcd.juno.disperze.network"
