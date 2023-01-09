@@ -1,216 +1,379 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import json
+import multiprocessing
+import os
+import random
+import re
 import time
 
 import logging
-import requests
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 import subprocess
-from shlex import split
-import re
 from datetime import datetime
 
-from requests.models import HTTPError
+from cosmpy.aerial.client import LedgerClient, create_bank_send_msg, prepare_and_broadcast_basic_transaction
+from cosmpy.aerial.config import NetworkConfig
+from cosmpy.aerial.exceptions import OutOfGasError, BroadcastError
+from cosmpy.aerial.tx import Transaction, SigningCfg
+from cosmpy.aerial.tx_helpers import SubmittedTx
+from cosmpy.crypto.address import Address
+from cosmpy.crypto.keypairs import PrivateKey
+from cosmpy.protos.cosmos.tx.v1beta1.service_pb2 import BroadcastMode, BroadcastTxRequest
 
-from chainlibpy import Transaction, Wallet
+from cosmpy.aerial.wallet import LocalWallet, Wallet
 
-class Envoi ():
-    def __init__(self, wallet, account_num):
-        self.wallet_1 = wallet
-        self.address_1 = self.wallet_1.address
-        self.account_num = account_num
-        self.mode = "sync"
+RPC_LIST = ['https://okp4-rpc.42cabi.net:443', 'https://rpc.okp4.indonode.net:443',
+            'https://okp4-rpc.punq.info:443',
+            ]
+REST_LIST = ['rest+https://okp4-api.42cabi.net', 'rest+https://api.okp4.indonode.net/',
+             'rest+https://api.okp.ppnv.space'
+             ]
 
-    def get_address(self):
-        return self.address_1
+class MyLedgerClient(LedgerClient):
+    def broadcast_tx(self, tx: Transaction, sync: bool = False):
+        """Broadcast transaction.
 
-    def set_mode(self, mode):
-        #print(f"set mode : {mode}")
-        self.mode = mode
-
-    def get_pushTx_sync(self, amount, sequence, timeout_block):
-        tx = Transaction(
-            wallet=self.wallet_1,
-            account_num=self.account_num,
-            sequence=sequence,
-            chain_id="testnet-croeseid-2",
-            fee=20000,
-            fee_denom="basetcro",
-            gas=200000,
-            sync_mode=self.mode,
-            memo=str(datetime.now()),
-            timeout=timeout_block,
+        :param tx: transaction
+        :param sync: sync or async transaction
+        :return: Submitted transaction
+        """
+        # create the broadcast request
+        broadcast_req = BroadcastTxRequest(
+            tx_bytes=tx.tx.SerializeToString(),
+            mode=BroadcastMode.BROADCAST_MODE_SYNC if sync else BroadcastMode.BROADCAST_MODE_ASYNC
         )
-        tx.add_transfer(to_address=self.address_1, amount=amount, base_denom="basetcro")
-        signed_tx = tx.get_pushable()
-        return signed_tx
 
-# wait for the next block height
-# can be usefull to restart the service between 2 block and
-# limite the lost of commits
-def sync_block(request_session):
-    url_info = "http://127.0.0.1:26657/status"
-    start_block = int(request_session.get(url_info).json()["result"]["sync_info"]["latest_block_height"]) 
+        # broadcast the transaction
+        resp = self.txs.BroadcastTx(broadcast_req)
+        if sync:
+            tx_digest = resp.tx_response.txhash
+
+            # check that the response is successful
+            initial_tx_response = self._parse_tx_response(resp.tx_response)
+            initial_tx_response.ensure_successful()
+
+            return SubmittedTx(self, tx_digest)
+
+    def prepare_send_tokens(
+            self,
+            destination: Address,
+            amount: int,
+            denom: str,
+            sender: Wallet,
+            account: Optional["Account"] = None,  # type: ignore # noqa: F821
+            memo: Optional[str] = None,
+            gas_limit: Optional[int] = None
+    ):
+        """Send tokens.
+
+        :param destination: destination address
+        :param amount: amount
+        :param denom: denom
+        :param sender: sender
+        :param memo: memo, defaults to None
+        :param gas_limit: gas limit, defaults to None
+        :return: prepare and broadcast the transaction and transaction details
+        """
+        # build up the store transaction
+        tx = Transaction()
+        tx.add_message(
+            create_bank_send_msg(sender.address(), destination, amount, denom)
+        )
+
+        return prepare_basic_transaction(
+            self, tx, sender, gas_limit=gas_limit, memo=memo, account=account
+        )
+
+    def send_tokens(
+            self,
+            destination: Address,
+            amount: int,
+            denom: str,
+            sender: Wallet,
+            account: Optional["Account"] = None,  # type: ignore # noqa: F821
+            memo: Optional[str] = None,
+            gas_limit: Optional[int] = None
+    ) -> SubmittedTx:
+        """Send tokens.
+
+        :param destination: destination address
+        :param amount: amount
+        :param denom: denom
+        :param sender: sender
+        :param memo: memo, defaults to None
+        :param gas_limit: gas limit, defaults to None
+        :return: prepare and broadcast the transaction and transaction details
+        """
+        # build up the store transaction
+        tx = Transaction()
+        tx.add_message(
+            create_bank_send_msg(sender.address(), destination, amount, denom)
+        )
+
+        return prepare_and_broadcast_basic_transaction(
+            self, tx, sender, gas_limit=gas_limit, memo=memo, account=account
+        )
+
+
+netconf = NetworkConfig(chain_id="okp4-nemeton-1",
+                        fee_minimum_gas_price=0.0025,
+                        fee_denomination='uknow',
+                        staking_denomination='uknow',
+                        url='rest+https://okp4-api.42cabi.net/'
+                        )
+ledger = MyLedgerClient(netconf)
+
+
+def broadcast_basic_transaction(
+        client: "LedgerClient",  # type: ignore # noqa: F821
+        tx: "Transaction",  # type: ignore # noqa: F821
+) -> SubmittedTx:
+    return client.broadcast_tx(tx)
+
+
+def prepare_basic_transaction(
+        client: "LedgerClient",  # type: ignore # noqa: F821
+        tx: "Transaction",  # type: ignore # noqa: F821
+        sender: "Wallet",  # type: ignore # noqa: F821
+        account: Optional["Account"] = None,  # type: ignore # noqa: F821
+        gas_limit: Optional[int] = None,
+        memo: Optional[str] = None,
+) -> Transaction:
+    """Prepare basic transaction.
+
+    :param client: Ledger client
+    :param tx: The transaction
+    :param sender: The transaction sender
+    :param account: The account
+    :param gas_limit: The gas limit
+    :param memo: Transaction memo, defaults to None
+
+    :return: broadcast transaction
+    """
+    # query the account information for the sender
+    if account is None:
+        account = client.query_account(sender.address())
+
+    if gas_limit is not None:
+        # simply build the fee from the provided gas limit
+        fee = client.estimate_fee_from_gas(gas_limit)
+    else:
+
+        # we need to build up a representative transaction so that we can accurately simulate it
+        tx.seal(
+            SigningCfg.direct(sender.public_key(), account.sequence),
+            fee="",
+            gas_limit=0,
+            memo=memo,
+        )
+        tx.sign(sender.signer(), client.network_config.chain_id, account.number)
+        tx.complete()
+
+        # simulate the gas and fee for the transaction
+        gas_limit, fee = client.estimate_gas_and_fee_for_tx(tx)
+
+    # finally, build the final transaction that will be executed with the correct gas and fee values
+    tx.seal(
+        SigningCfg.direct(sender.public_key(), account.sequence),
+        fee=fee,
+        gas_limit=gas_limit,
+        memo=memo,
+    )
+    tx.sign(sender.signer(), client.network_config.chain_id, account.number)
+    tx.complete()
+
+    return tx
+
+
+def spam(wallet: LocalWallet):
+    gas = 70000
+    sequence = 0
+    check_tx = True
+    print(f"start thread for wallet: {wallet.address()}")
+    netconf = NetworkConfig(chain_id="okp4-nemeton-1",
+                            fee_minimum_gas_price=0.0025,
+                            fee_denomination='uknow',
+                            staking_denomination='uknow',
+                            url=REST_LIST[random.randint(0, len(REST_LIST)-1)]
+                            )
+    ledger = MyLedgerClient(netconf)
+
+    try:
+        # get the account info
+        account = ledger.query_account(wallet.address())
+        address = wallet.address()
+        sequence = account.sequence
+        balance = ledger.query_bank_balance(wallet.address())
+        print(f"account {address}: balance {balance}")
+    except Exception as err:
+        print(err)
     while True:
-        block = int(request_session.get(url_info).json()["result"]["sync_info"]["latest_block_height"])
-        #print(f"wait new block {block} {start_block}", end='\r')
-        if block == start_block:
-            time.sleep(1)
-            continue
-        else:
-            print("")
-            break
-    time.sleep(0.1)
+        # get the balance of address_1
+        print(f"sequence start: {sequence}")
+        # define last sequence number for the loop
+        stop_at = sequence + 100000
+        seq = sequence
+
+        for seq in range(sequence, stop_at):
+            try:
+                if check_tx:
+                    tx = ledger.prepare_send_tokens(destination=address,
+                                                    amount=1,
+                                                    denom="uknow",
+                                                    sender=wallet,
+                                                    account=account,
+                                                    memo="stress test",
+                                                    gas_limit=gas
+                                                    )
+                    sent_tx = ledger.broadcast_tx(tx, True)
+                    #check_tx = False
+                else:
+                    sent_tx = ledger.send_tokens(destination=address,
+                                                 amount=1,
+                                                 denom="uknow",
+                                                 sender=wallet,
+                                                 account=account,
+                                                 memo="stress test",
+                                                 gas_limit=gas
+                                                 )
+            except OutOfGasError as err:
+                gas += err.gas_wanted
+                print(f"increase gas to {gas}")
+            except BroadcastError as err:
+                """
+                tx = ledger.wait_for_query_tx(tx_hash=err.tx_hash)
+                # mempool full
+                if tx.code == 20:
+                    print(f"mempool is full at Tx: {err.tx_hash}")
+                    time.sleep(10)
+                # sequence missmatch
+                elif tx.code == 32:
+                    
+                else:
+                """
+                if "account sequence mismatch" in str(err):
+                    match = re.search(r"expected \s*(\d+\w+)", str(err))
+                    if match is not None:
+                        required_sequence = match.group(1)
+                        account.sequence = int(required_sequence)
+                        print(f"wallet {address} reset sequence to {account.sequence}")
+                    else:
+                        print("cannot match")
+                else:
+                    print(f"wallet {address} error {err} (waiting)")
+                    time.sleep(30)
+            except Exception as err:
+                print(f"wallet {address} error {err}")
+            else:
+                account.sequence += 1
+
 
 def main():
     print("### STARTING FLODDING ###")
-    
+
     # create a wallet from my seed
-    seed = "slogan initial run clock nasty clever aisle trumpet label doll comic fit gas game casino knife outside hunt genuine nerve mad notable alarm camera"
-    wallet_1 = Wallet(seed, path="m/44'/1'/0'/0/0", hrp="tcro")
-    address_1 = wallet_1.address
-    print(address_1)
-    
-    # the api port setted in ${home_dir of chain-maind}/config/app.toml, the default is ~/.chain-maind/config/app.toml
-    local_url = "http://localhost:1317"
-    url_tx = f"{local_url}/txs"
-    #url_info = f"https://crossfire.crypto.com:443/status"
-    url_block = f"http://127.0.0.1:26657/block"
-    url_account = f"{local_url}/cosmos/auth/v1beta1/accounts/{address_1}"
-    url_balance = f"{local_url}/cosmos/bank/v1beta1/balances/{address_1}"
+    SEED = "slogan initial run clock nasty clever aisle trumpet label doll comic fit gas game casino knife outside hunt genuine nerve mad notable alarm camera"
+    CPU_NUM = multiprocessing.cpu_count()
 
-    # init request session to reuse tcp socket
-    r = requests.Session()
-    response = r.get(url_account)
-    account_info = response.json()["account"]
-    account_num = int(account_info["account_number"])
-    sequence = int(account_info["sequence"])
-    stop_at = sequence
-    
-    # create transaction object
-    send_object = Envoi(wallet_1, account_num)
-    send_object.set_mode("sync")
+    spam_wallet = LocalWallet.from_mnemonic(mnemonic=SEED, prefix="okp4")
+    spam_account = ledger.query_account(spam_wallet.address())
+    slave_wallets = []
 
-    #create a logger
+    print(f"create {CPU_NUM} wallets")
+    if os.path.exists(os.path.join(os.getenv('HOME'), '.okp4', 'spam_wallets.json')):
+        j = json.load(open(os.path.join(os.getenv('HOME'), '.okp4', 'spam_wallets.json'), 'r'))
+        for wallet in j:
+            slave_wallets.append(LocalWallet(private_key=PrivateKey(wallet['private_key']), prefix='okp4'))
+    else:
+        for cpu in range(0, CPU_NUM):
+            slave_wallets.append(LocalWallet.generate("okp4"))
+        j = [{"private_key": wallet.signer().private_key} for wallet in slave_wallets]
+        os.makedirs(os.path.join(os.getenv('HOME'), '.okp4'), mode=755, exist_ok=True)
+        json.dump(j, open(os.path.join(os.getenv('HOME'), '.okp4', 'spam_wallets.json'), 'w+'))
+
+    for wallet in slave_wallets:
+        if ledger.query_bank_balance(wallet.address()) <= (1000000 / 2):
+            print(f"send tokens to {wallet.address()}")
+            t = ledger.prepare_send_tokens(destination=wallet.address(),
+                                           amount=1000000,
+                                           denom="uknow",
+                                           sender=spam_wallet,
+                                           account=spam_account,
+                                           )
+            r = ledger.broadcast_tx(t, True)
+            spam_account.sequence += 1
+
+    time.sleep(10)
+
+    # create a logger
     logger = logging.getLogger('mylogger')
 
-    seq = 0
+    # instanciate 1 thread per wallet
+    with ThreadPoolExecutor(max_workers=multiprocessing.cpu_count()) as pool:
+        results = pool.map(spam, slave_wallets)
 
+    seq = 0
     now = datetime.now()
     amount = 1 * 10 ** 8
     break_block = 0
     # get the account info
+    sequence = spam_account.sequence
+    balance_1 = ledger.query_bank_balance(spam_wallet.address())
     while True:
         # get the balance of address_1
-        response = r.get(url_balance)
-        balance_1 = int(response.json()["balances"][0]["amount"])
-        
-        #if account_num == 0 or sequence == 0:
-        # get account number and sequence ID
-        response = r.get(url_account)
-        account_info = response.json()["account"]
-        account_num = int(account_info["account_number"])
-        sequence = int(account_info["sequence"])
-        response = r.get(url_block)
-        block_height = int(response.json()["result"]["block"]["header"]["height"])
-        if (sequence != stop_at) and (break_block >= block_height):
-                print(f"{block_height} {sequence} different than {stop_at}", end='\r')
-                sync_block(r)
-                #time.sleep(1)
-                continue
-        else :
-            print("")
-        send_object.set_mode("sync")
-    
-        print(f"balance of address 1: {balance_1}")
         print(f"sequence start: {sequence}")
 
-        
         # check the balance is enought to not drain all our tcro
-        if balance_1 >= 3000000000 : # each loop cost 30TCRO
+        if balance_1 >= 3000000:  # each loop cost 30TCRO
             # define last sequence number for the loop
-            stop_at = sequence + 1000
+            stop_at = sequence + 10000
             seq = sequence
+
+            def call(seq) -> [int, Transaction]:
+                spam_account.sequence = seq
+                return seq, ledger.prepare_send_tokens(destination=spam_account.address,
+                                                       amount=1,
+                                                       denom="uknow",
+                                                       sender=spam_wallet,
+                                                       account=spam_account,
+                                                       memo="stress test",
+                                                       gas_limit=70000
+                                                       )
+
+            # r = [i for i in range(sequence, stop_at)]
+            # with ThreadPoolExecutor(max_workers=multiprocessing.cpu_count()) as pool:
+            #     # with ThreadPoolExecutor(max_workers=4) as pool:
+            #     results = pool.map(call, r)
+            # print(f"generated {len(r)} transaction")
+            # results = [(seq, tx) for seq, tx in results]
+            # results = sorted(results, key=lambda seq: seq[0])
+            # for seq, tx in results:
+            #     try:
+            #         print(tx.tx.auth_info.signer_infos)
+            #         sent_tx = broadcast_basic_transaction(ledger, tx)
+            #     except BroadcastError as err:
+            #         time.sleep(3)
+            #         sent_tx = broadcast_basic_transaction(ledger, tx)
+            #     time.sleep(0.001)
             for seq in range(sequence, stop_at):
-            #while True:
-                # make transaction
-                break_block = block_height+20
-                signed_tx = send_object.get_pushTx_sync(amount=1, sequence=seq, timeout_block=break_block)
-                try:
-                    # send the Tx
-                    #print(signed_tx)
-                    response = r.post(url_tx, json=signed_tx)
-                    response.raise_for_status()
-                except HTTPError as e:
-                    print(e)
-                    time.sleep(1)
-                    continue
+                seq, tx = call(seq)
+                sent_tx = broadcast_basic_transaction(ledger, tx)
 
-                result = response.json()
-                code = result.get("code")
-                # error code managment
-                if not code:
-                    print(block_height+5, end=' ')
-                    print(seq, end=' ')
-                    #print(response.text)
-                    print(response.text)
-                    # update sequence start number
-                    seq += 1
-                    sequence = seq
-                    #send_object.set_mode("async")
-                    continue
-                if code == 0:
-                    print(f"error {code} tx OK")
-                    # increment the sequence number
-                    seq += 1
-                    # update sequence start number
-                    sequence = seq
-                elif  code == 4:
-                    print(f"sequence {seq} error {code} unauthorized")
-                    # unauthorized
-                    print(response.text)
-                    p = re.compile('\d+')
-                    int(p.findall(result['raw_log'])[1])
-                    time.sleep(5)
-                    # force retrieve sequence num
-                    seq = 0
-                    sequence = seq
-                    exit("resync")
-                    break
-                elif  code == 19:
-                    # the Tx already exist, sequence number not up to date
-                    print(f"error {code} tx {seq} already in mempool", end='\n')
-                    # force retrieve sequence num
-                    seq = 0
-                    # update sequence start number
-                    sequence = seq
-                    break
-                elif  code == 20:
-                    # mempool is full, give time to purge
-                    print(f"index {seq} error {code} mempool is full")
-                    # update sequence start number
-                    sequence = seq
-                    stop_at = seq
-                    break
-
-                elif  code == 32:
-                    print(f"index {seq} error {code} sequence error (congestion?)")
-                else :
-                    # any other code
-                    print(f"index {seq} error {code} ")
-                    seq = 0
-                    exit("new unknow error")
             # update sequence start number
             sequence = seq
             # end for loop
-            #sync_block(r)
-            #send_object.set_mode("sync")
+            # sync_block(r)
+            # send_object.set_mode("sync")
             time.sleep(5)
         else:
-            print("no Tcro left")
+            print("no uknow left")
             withdraw_cmd = f"chain-maind tx distribution withdraw-all-rewards --from {address_1} -y --gas-prices 0.1basetcro --chain-id testnet-croeseid-2 --keyring-backend test --home /home/dpierret/.chain-maind"
             subprocess.check_output(withdraw_cmd, shell=True).decode("utf-8")
             sync_block(r)
+
 
 if __name__ == "__main__":
     main()
